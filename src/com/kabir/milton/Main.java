@@ -1,320 +1,325 @@
 package com.kabir.milton;
 
-import java.io.*;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.Random;
 import java.util.Scanner;
 
 public class Main {
     public static void main(String[] args) {
-        stage4();
+        file();
     }
 
-    private static void stage4() {
-        Scanner scanner = new Scanner(System.in);
-        String inFileName;
-        String outFileName;
-        Transmitter transmitter = null;
-        switch (scanner.next()) {
+    public static void file() {
+        Filer file = new Filer();
+        final Scanner scanner = new Scanner(System.in);
+
+        System.out.println("Write a mode: ");
+        switch (scanner.nextLine()) {
             case "encode":
-                inFileName = "send.txt";
-                outFileName = "encoded.txt";
-                transmitter = new HammingEncoder(inFileName, outFileName);
+                file.encodeFileHamming("send.txt",
+                        "encoded.txt");
                 break;
             case "send":
-                inFileName = "encoded.txt";
-                outFileName = "received.txt";
-                transmitter = new Scrambler(inFileName, outFileName);
+                file.sendFileWithErrors("encoded.txt",
+                        "received.txt");
                 break;
             case "decode":
-                inFileName = "received.txt";
-                outFileName = "decoded.txt";
-                transmitter = new HammingDecoder(inFileName, outFileName);
+                file.decodeFileHamming("received.txt",
+                        "decoded.txt");
                 break;
             default:
                 break;
         }
-        if (transmitter != null) {
-            transmitter.transmit();
-        }
     }
 }
 
-abstract class Transmitter {
+class Filer {
+    private final int[] BIT_PAIRS = {0b11000000, 0b00110000, 0b00001100, 0b00000011};
+    private final int[] BIT_PATTS = {0b10000000, 0b01000000, 0b00100000, 0b00010000,
+            0b00001000, 0b00000100, 0b00000010, 0b00000001};
 
-    private final String inFileName;
-    private final String outFileName;
-
-    Transmitter(String inFileName, String outFileName) {
-        this.inFileName = inFileName;
-        this.outFileName = outFileName;
-    }
-
-    void transmit() {
-        try (InputStream inFileStream = new FileInputStream(this.inFileName);
-             OutputStream outFileStream = new FileOutputStream(this.outFileName);
-             BufferedInputStream inStream = new BufferedInputStream(inFileStream);
-             BufferedOutputStream outStream = new BufferedOutputStream(outFileStream)
-        ) {
-            send(inStream, outStream);
+    public void sendFileWithErrors(String sendFile, String receiveFile) {
+        Random rnd = new Random();
+        try (FileInputStream infile = new FileInputStream(sendFile);
+             FileOutputStream outfile = new FileOutputStream(receiveFile)) {
+            for (int data = infile.read(); data != -1; data = infile.read()) {
+                data ^= 1 << rnd.nextInt(8);
+                outfile.write(data);
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    abstract void send(InputStream inputStream, OutputStream outputStream);
-}
-
-class Encoder extends Transmitter {
-
-    Encoder(String inFileName, String outFileName) {
-        super(inFileName, outFileName);
-    }
-
-    @Override
-    public void send(InputStream inputStream, OutputStream outputStream) {
-
-        int targetByte = 0;
-        int targetBitmask = (1 << 7) | (1 << 6);
-        int sourceBitmask = 1 << 7;
-
+    public void encodeFile(String readFile, String writeFile) {
+        byte data_out = 0;
         int parity = 0;
-        try {
-            int sourceByte = inputStream.read();
-            while (sourceByte != -1) {
-                // if we've scanned 3 bits, set parity bits
-                if (targetBitmask == 3) {
-                    if (parity == 1) {
-                        targetByte |= 3;
+        int pairs = 0;
+        boolean data_written = false;
+
+        try (FileInputStream infile = new FileInputStream(readFile);
+             FileOutputStream outfile = new FileOutputStream(writeFile)) {
+            for (int data_in = infile.read(); data_in != -1; data_in = infile.read()) {
+                for (int bit = 0; bit < 8; bit++) {
+                    data_written = false;
+                    if ((data_in & BIT_PATTS[bit]) != 0) {
+                        data_out += BIT_PAIRS[pairs];
+                        parity++;
                     }
-                    outputStream.write(targetByte);
-                    parity = 0;
-                    targetByte = 0;
-                    targetBitmask = 3 << 6;
-                } else {
-                    if ((sourceByte & sourceBitmask) != 0) {
-                        targetByte |= targetBitmask;
-                        parity ^= 1;
-                    }
-                    targetBitmask >>= 2;
-                    sourceBitmask >>= 1;
-                    if (sourceBitmask == 0) {
-                        sourceByte = inputStream.read();
-                        sourceBitmask = 1 << 7;
+                    if (++pairs == 3) {
+                        if (parity % 2 == 1) {
+                            data_out += BIT_PAIRS[pairs];
+                        }
+                        outfile.write(data_out);
+                        data_written = true;
+                        pairs = 0;
+                        parity = 0;
+                        data_out = 0b00000000;
                     }
                 }
             }
-            // write the unfinished byte, if any
-            if (targetBitmask != (3 << 6)) {
-                if (parity != 0) {
-                    targetByte |= 3;
+
+            if (!data_written) {
+                if (parity % 2 == 1) {
+                    data_out += BIT_PAIRS[3];
                 }
-                outputStream.write(targetByte);
+                outfile.write(data_out);
             }
-            outputStream.flush();
         } catch (IOException e) {
-            System.out.println(e.getMessage());
+            e.printStackTrace();
         }
+    }
+
+    public void decodeFile(String receiveFile, String decodeFile) {
+        int[] pairs = {0, 0, 0, 0};
+        int bit = 0;
+        byte data_out = 0;
+        int parity;
+
+        try (FileInputStream infile = new FileInputStream(receiveFile);
+             FileOutputStream outfile = new FileOutputStream(decodeFile)) {
+            for (int data_in = infile.read(); data_in != -1; data_in = infile.read()) {
+                parity = 0;
+                for (int pair = 0; pair < 3; pair++) {
+                    pairs[pair] = data_in & BIT_PAIRS[pair];
+                    parity += pairs[pair] == BIT_PAIRS[pair] ? 1 : 0;   // add to parity if the bit pair is correct
+                }
+
+                pairs[3] = data_in & BIT_PAIRS[3];
+                parity %= 2;
+
+                if (pairs[3] == 0 || pairs[3] == BIT_PAIRS[3]) { // parity pair is correct, so a data pair is wrong
+                    int data_parity = pairs[3] == 0 ? 0 : 1;
+                    for (int pair = 0; pair < 3; pair++) {
+                        if (pairs[pair] > 0 && pairs[pair] != BIT_PAIRS[pair]) {
+                            // found the incorrect data pair, set to 0 if the calculated parity and data parity match
+                            pairs[pair] = (parity ^ data_parity) == 0 ? 0 : BIT_PAIRS[pair];
+                            break;
+                        }
+                    }
+                }
+                for (int pair = 0; pair < 3; pair++) {
+                    data_out += pairs[pair] == 0 ? 0 : BIT_PATTS[bit];
+                    if (++bit == 8) {
+                        outfile.write(data_out);
+                        bit = 0;
+                        data_out = 0;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void encodeFileHamming(String readFile, String writeFile) {
+        int data_out;
+        int nybble;
+
+        try (FileInputStream infile = new FileInputStream(readFile);
+             FileOutputStream outfile = new FileOutputStream(writeFile)) {
+            for (int data_in = infile.read(); data_in != -1; data_in = infile.read()) {
+                nybble = data_in & 0b11110000;
+                nybble = nybble >>> 4;
+                data_out = encodeHamming(nybble);
+                outfile.write(data_out);
+                nybble = data_in & 0b00001111;
+                data_out = encodeHamming(nybble);
+                outfile.write(data_out);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void decodeFileHamming(String readFile, String writeFile) {
+        int data_out;
+        byte[] bytes_in = new byte[2];
+
+        try (FileInputStream infile = new FileInputStream(readFile);
+             FileOutputStream outfile = new FileOutputStream(writeFile)) {
+            for (int data_in = infile.read(bytes_in); data_in != -1; data_in = infile.read(bytes_in)) {
+                data_out = decodeHamming(bytes_in[0]);
+                data_out = data_out << 4;
+                data_out += decodeHamming(bytes_in[1]);
+                outfile.write(data_out);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private int encodeHamming(int nybble) {
+        int encoded = 0;
+        int p1 = 0;
+        int p2 = 0;
+        int p4 = 0;
+
+        if ((nybble & BIT_PATTS[4]) != 0) {
+            encoded += BIT_PATTS[2];
+            p1 ^= 1;
+            p2 ^= 1;
+        }
+
+        if ((nybble & BIT_PATTS[5]) != 0) {
+            encoded += BIT_PATTS[4];
+            p1 ^= 1;
+            p4 ^= 1;
+        }
+
+        if ((nybble & BIT_PATTS[6]) != 0) {
+            encoded += BIT_PATTS[5];
+            p2 ^= 1;
+            p4 ^= 1;
+        }
+
+        if ((nybble & BIT_PATTS[7]) != 0) {
+            encoded += BIT_PATTS[6];
+            p1 ^= 1;
+            p2 ^= 1;
+            p4 ^= 1;
+        }
+
+        if (p1 != 0) {
+            encoded += BIT_PATTS[0];
+        }
+
+        if (p2 != 0) {
+            encoded += BIT_PATTS[1];
+        }
+
+        if (p4 != 0) {
+            encoded += BIT_PATTS[3];
+        }
+
+        return encoded;
+    }
+
+    private int decodeHamming(int encoded) {
+        int decoded = 0;
+        int p1 = 0;
+        int p2 = 0;
+        int p4 = 0;
+
+        if ((encoded & BIT_PATTS[2]) != 0) {
+            decoded += BIT_PATTS[4];
+            p1 ^= 1;
+            p2 ^= 1;
+        }
+
+        if ((encoded & BIT_PATTS[4]) != 0) {
+            decoded += BIT_PATTS[5];
+            p1 ^= 1;
+            p4 ^= 1;
+        }
+
+        if ((encoded & BIT_PATTS[5]) != 0) {
+            decoded += BIT_PATTS[6];
+            p2 ^= 1;
+            p4 ^= 1;
+        }
+
+        if ((encoded & BIT_PATTS[6]) != 0) {
+            decoded += BIT_PATTS[7];
+            p1 ^= 1;
+            p2 ^= 1;
+            p4 ^= 1;
+        }
+
+        int error = 0;
+
+        if ((p1 != 0) ^ ((encoded & BIT_PATTS[0]) != 0)) {
+            error += 1;
+        }
+
+        if ((p2 != 0) ^ ((encoded & BIT_PATTS[1]) != 0)) {
+            error += 2;
+        }
+
+        if ((p4 != 0) ^ ((encoded & BIT_PATTS[3]) != 0)) {
+            error += 4;
+        }
+
+        switch (error) {
+            case 3:
+                decoded += (encoded & BIT_PATTS[2]) == 0 ? BIT_PATTS[4] : -BIT_PATTS[4];
+                break;
+            case 5:
+                decoded += (encoded & BIT_PATTS[4]) == 0 ? BIT_PATTS[5] : -BIT_PATTS[5];
+                break;
+            case 6:
+                decoded += (encoded & BIT_PATTS[5]) == 0 ? BIT_PATTS[6] : -BIT_PATTS[6];
+                break;
+            case 7:
+                decoded += (encoded & BIT_PATTS[6]) == 0 ? BIT_PATTS[7] : -BIT_PATTS[7];
+                break;
+            default:
+                break;
+        }
+
+        return decoded;
     }
 }
 
-class HammingEncoder extends Transmitter {
+class Message {
+    private StringBuilder message;
 
-    HammingEncoder(String inFileName, String outFileName) {
-        super(inFileName, outFileName);
+    Message(String message) {
+        this.message = new StringBuilder(message);
     }
 
-    @Override
-    public void send(InputStream inputStream, OutputStream outputStream) {
+    public void encodeMessage() {
+        for (int i = message.length() - 1; i >= 0; i--) {
+            message.insert(i, String.valueOf(message.charAt(i)).repeat(2));
+        }
+    }
 
-        // testHammingEncoder();
+    public void makeErrors() {
+        Random rnd = new Random();
+        String charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
+        for (int i = 0; i < message.length(); i += 3) {
+            message.setCharAt(i + rnd.nextInt(3),
+                    charset.charAt(rnd.nextInt(charset.length())));
+        }
+    }
 
-        try {
-            int sourceByte = inputStream.read();
-            while (sourceByte != -1) {
-                outputStream.write(createHammingByte((sourceByte & (0xf << 4)) >> 4));
-                outputStream.write(createHammingByte(sourceByte & 0xf));
-                sourceByte = inputStream.read();
+    public void decodeMessage() {
+        StringBuilder decoded = new StringBuilder();
+        for (int i = 0; i < message.length(); i += 3) {
+            if (message.charAt(i) == message.charAt(i + 1)) {
+                decoded.append(message.charAt(i));
+            } else if (message.charAt(i) == message.charAt(i + 2)) {
+                decoded.append(message.charAt(i));
+            } else {
+                decoded.append(message.charAt(i + 1));
             }
-            outputStream.flush();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
         }
+        message = decoded;
     }
 
-    // [p1, p2, d1, p3, d2, d3, d4, 0]
-    // p1 ^ d1 ^ d2 ^ d4
-    // p2 ^ d1 ^ d3 ^ d4
-    // p3 ^ d2 ^ d3 ^ d4
-
-    private int createHammingByte(int sourceByte) {
-
-        int[] bits = new int[]{0, 0, 0, 0};
-        int targetByte = 0;
-        int targetByteMask = 2;
-        int parity = 0;
-        int val;
-
-        for (int i = 3; i >= 1; i--) {
-            val = sourceByte & 1;
-            bits[i] = val;
-            parity ^= val;
-            sourceByte >>= 1;
-            if (val == 1) targetByte |= targetByteMask;
-            targetByteMask <<= 1;
-        }
-
-        // set p3
-        if (parity == 1) targetByte |= targetByteMask;
-        targetByteMask <<= 1;
-
-        // set d1
-        bits[0] = sourceByte & 1;
-        if (bits[0] != 0) {
-            targetByte |= targetByteMask;
-        }
-
-        // set p2
-        targetByteMask <<= 1;
-        parity = bits[0] ^ bits[2] ^ bits[3];
-        if (parity == 1) targetByte |= targetByteMask;
-
-        // set p1
-        targetByteMask <<= 1;
-        parity = bits[0] ^ bits[1] ^ bits[3];
-        if (parity == 1) targetByte |= targetByteMask;
-
-        return targetByte;
-    }
-}
-
-class Scrambler extends Transmitter {
-
-    Scrambler(String inFileName, String outFileName) {
-        super(inFileName, outFileName);
-    }
-
-    @Override
-    public void send(InputStream inputStream, OutputStream outputStream) {
-        Random random = new Random(System.currentTimeMillis());
-        try {
-            int sourceByte = inputStream.read();
-            while (sourceByte != -1) {
-                int n = random.nextInt(8);
-
-                int mask = 1 << n;
-                if ((sourceByte & mask) == 0) {
-                    sourceByte |= mask;
-                } else {
-                    sourceByte &= (~mask);
-                }
-                outputStream.write(sourceByte);
-                sourceByte = inputStream.read();
-            }
-            outputStream.flush();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-        }
-    }
-}
-
-class Decoder extends Transmitter {
-
-    Decoder(String inFileName, String outFileName) {
-        super(inFileName, outFileName);
-    }
-
-    @Override
-    public void send(InputStream inputStream, OutputStream outputStream) {
-        int targetByte = 0;
-        int targetBitmask = 1 << 7;
-        try {
-            int sourceByte = inputStream.read();
-            while (sourceByte != -1) {
-
-                int[] bitPairs = new int[]{0, 0, 0, 0};
-
-                // Read off pairs of bits
-                int invalidPairIdx = 0;
-                int parityCheck = 0;
-                for (int i = 3; i >= 0; i--) {
-                    int val = sourceByte & 3;
-                    sourceByte >>= 2;
-                    if (val == 3) bitPairs[i] = 1;
-                    else if (val != 0) invalidPairIdx = i;
-                    parityCheck ^= bitPairs[i];
-                }
-                if (parityCheck != 0) bitPairs[invalidPairIdx] = 1;
-
-                for (int i = 0; i < 3; i++) {
-                    if (bitPairs[i] == 1) targetByte |= targetBitmask;
-                    targetBitmask >>= 1;
-                    // target byte full, write it
-                    if (targetBitmask == 0) {
-                        outputStream.write(targetByte);
-                        targetByte = 0;
-                        targetBitmask = 1 << 7;
-                    }
-                }
-                sourceByte = inputStream.read();
-            }
-            outputStream.flush();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-        }
-    }
-}
-
-class HammingDecoder extends Transmitter {
-
-    HammingDecoder(String inFileName, String outFileName) {
-        super(inFileName, outFileName);
-    }
-
-    @Override
-    public void send(InputStream inputStream, OutputStream outputStream) {
-        int targetByte;
-        byte[] sourceBytes = new byte[] {0, 0};
-        try {
-            while (inputStream.read(sourceBytes) == 2) {
-                targetByte = decodeHalfByte(sourceBytes[0]) << 4;
-                targetByte |= decodeHalfByte(sourceBytes[1]);
-                outputStream.write(targetByte);
-            }
-            outputStream.flush();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-        }
-    }
-
-    private int decodeHalfByte(byte sourceByte) {
-        int targetByte = 0;
-        int[] bits = new int[8];
-        for (int i = 7; i >= 0; i--) {
-            bits[i] = sourceByte & 1;
-            sourceByte >>= 1;
-        }
-
-        // Correct error
-        int g1 = bits[0] ^ bits[2] ^ bits[4] ^ bits[6];
-        int g2 = bits[1] ^ bits[2] ^ bits[5] ^ bits[6];
-        int g3 = bits[3] ^ bits[4] ^ bits[5] ^ bits[6];
-
-        if ((g1 & g2 & g3) == 1) {
-            bits[6] = ~bits[6];
-        } else if ((g1 & g2) == 1) {
-            bits[2] = ~bits[2];
-        } else if ((g2 & g3) == 1) {
-            bits[5] = ~bits[5];
-        } else if ((g1 & g3) == 1) {
-            bits[4] = ~bits[4];
-        }
-
-        // write corrected half-byte to targetByte
-        targetByte |= bits[6] & 1;
-        targetByte |= (bits[5] & 1) << 1;
-        targetByte |= (bits[4] & 1) << 2;
-        targetByte |= (bits[2] & 1) << 3;
-
-        return targetByte;
+    public void print() {
+        System.out.println(message.toString());
     }
 }
